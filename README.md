@@ -34,9 +34,21 @@ Inputs can be loaded from an Excel workbook (`tax_inputs_template.xlsx`) and mod
    - **Cliff Taxation**: If net earnings in a zone exceed the threshold, the tax rate ($0.60\%$ Zone 1, $0.34\%$ Zone 2) applies to the **entire** allocated net earnings in that zone, not just the excess over the threshold.
    - **2026 vs. 2025 Law Change**: The $150,000 threshold applies beginning in tax year 2026. For tax year 2025 returns (even if prepared in 2026), the prior $50,000 threshold applies. Both years can be modeled directly.
 
-5. **Quarterly Tax Estimator**:
+5. **NYC Unincorporated Business Tax (UBT) Full Modeling**:
+   - **Separate NYC Tax**: Administered by the NYC Department of Finance (Forms NYC-202 / NYC-202S), completely separate from regular NYC personal income tax and MCTMT.
+   - **Gross Filing Threshold ($95,000)**: Evaluated on **gross business receipts**, not net profit. Businesses with $> \$95,000$ in gross revenue must generally file a return even if actual tax liability is $\$0$.
+   - **Personal Services Deduction**: Automatically deducts $20\%$ of net business profit up to a **$10,000** maximum allowance for services rendered by the proprietor (NYC Admin Code § 11-508(a)).
+   - **Specific Business Exemption**: Applies the statutory **$5,000** annual exemption.
+   - **4% Tax & Small Business Credit**:
+     - Gross UBT calculated at $4\%$.
+     - **Full Elimination ($\le \$3,400$)**: For profits up to $\$100,000$, taxable income is $\$85,000$ ($\$100\text{k} - \$10\text{k} - \$5\text{k}$), gross tax is $\$3,400$, and the small-business credit eliminates $100\%$ of the tax ($-\$3,400$), resulting in **$0 UBT owed**.
+     - **Sliding Phaseout**: Taxes between $\$3,400$ and $\$5,400$ receive a partial credit; taxes $\ge \$5,400$ receive no credit.
+   - **Form NYC-202 vs. NYC-202S**: Alerts the user if traditional Solo 401(k) contributions or multiple trades require filing the full Form NYC-202 rather than the simplified Form NYC-202S.
+   - **NYC Resident Credit (Form IT-219)**: Offsets NYC personal income tax by the allowed percentage ($100\%$ down to $15\%$) of any UBT actually paid.
+
+6. **Quarterly Tax Estimator**:
    - Computes annual liabilities and divides remaining obligations (net of withholdings and prior estimated payments) across remaining installment dates.
-   - Covers Federal income tax, SE tax, 0.9% Additional Medicare tax (Form 8959), 3.8% Net Investment Income Tax (NIIT), NYS income tax, NYC resident personal tax (with school credits and UBT credit), MCTMT, and simplified NYC Unincorporated Business Tax (UBT).
+   - Covers Federal income tax, SE tax, 0.9% Additional Medicare tax (Form 8959), 3.8% Net Investment Income Tax (NIIT), NYS income tax, NYC resident personal tax (with school credits and UBT credit), MCTMT, and NYC UBT.
 
 ---
 

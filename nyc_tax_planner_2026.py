@@ -168,6 +168,7 @@ class Result:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     hsa_schedule: list[tuple[int, str, float]] = field(default_factory=list)
+    ubt_form: str = "NYC-202S (Simplified)"
 
 
 def validate(i: Inputs) -> None:
@@ -411,18 +412,38 @@ def evaluate(i: Inputs) -> Result:
     school_fixed=63. if agi<=250000 else 0.
     school_rate=(min(12000.,ny_taxable)*.00171 if ny_taxable<=12000
                  else 21.+(ny_taxable-12000.)*.00228) if agi<=500000 and ny_taxable<=500000 else 0.
-    # NYC-202 UBT estimating worksheet: simplified NYC adjusted business net income,
-    # full-year $5,000 specific exemption, 4% city UBT, $3,400 / $5,400 credit.
-    ubt_net_business=max(0.,profit+i.ubt_city_net_income_adjustment)
-    ubt_precredit=.04*max(0.,ubt_net_business-5000.)
-    if ubt_precredit<=3400:
-        ubt_business_credit=ubt_precredit
-    elif ubt_precredit<5400:
-        ubt_business_credit=ubt_precredit*(5400-ubt_precredit)/2000.
+    # NYC-202 / NYC-202S UBT worksheet (NYC Administrative Code § 11-508 & § 11-503):
+    # 1. Gross business receipts: evaluated for the $95,000 filing threshold.
+    # 2. Net business profit from Schedule C (+/- user NYC net income adjustment).
+    # 3. Personal services deduction: 20% of net income, capped at $10,000 for an individual proprietor.
+    # 4. Specific business exemption: $5,000 full-year exemption.
+    # 5. Taxable UBT base: max(0, net business income - personal services deduction - $5,000).
+    # 6. 4% city UBT rate.
+    # 7. Small business tax credit:
+    #    - If gross UBT <= $3,400: credit is 100% of tax, eliminating UBT completely to $0.
+    #    - If gross UBT between $3,400 and $5,400: credit = tax * (5400 - tax) / 2000.
+    #    - If gross UBT >= $5,400: credit is $0.
+    # 8. $95,000 gross business receipts filing threshold:
+    #    A return (NYC-202 or NYC-202S) MUST generally be filed with the NYC Department of Finance
+    #    if gross business receipts exceed $95,000, even if actual tax liability is $0!
+    ubt_gross_receipts = max(0., i.gross_business)
+    ubt_net_business = max(0., profit + i.ubt_city_net_income_adjustment)
+    ubt_personal_services = min(10000., max(0., ubt_net_business * 0.20))
+    ubt_taxable = max(0., ubt_net_business - ubt_personal_services - 5000.)
+    ubt_precredit = .04 * ubt_taxable
+
+    if ubt_precredit <= 3400:
+        ubt_business_credit = ubt_precredit
+    elif ubt_precredit < 5400:
+        ubt_business_credit = ubt_precredit * (5400 - ubt_precredit) / 2000.
     else:
-        ubt_business_credit=0.
-    ubt_computed=max(0.,ubt_precredit-ubt_business_credit)
-    ubt_due=ubt_computed if i.ubt_auto_estimate else i.nyc_ubt_annual_manual
+        ubt_business_credit = 0.
+
+    ubt_computed = max(0., ubt_precredit - ubt_business_credit)
+    ubt_due = ubt_computed if i.ubt_auto_estimate else i.nyc_ubt_annual_manual
+    ubt_filing_required = (ubt_gross_receipts > 95000.) or (ubt_precredit > 3400.)
+    r.ubt_form = "NYC-202 (Full)" if (i.solo_actual > 0 or ubt_net_business > 100000.) else "NYC-202S (Simplified)"
+
     if ny_taxable<=42000:
         ubt_personal_credit_rate=1.
     elif ny_taxable<142000:
@@ -484,8 +505,29 @@ def evaluate(i: Inputs) -> Result:
                     f"not just the excess over the threshold, totaling {money(mct2)}."
                 )
 
-    if profit>0 and i.ubt_auto_estimate:
-        warn.append('NYC UBT uses an ESTIMATED NYC business tax base (Schedule C profit + entered NYC adjustment), not a full NYC-202 return. Verify UBT, credits, business allocation, deductions, and NYC IT-219 before paying.')
+    if ubt_filing_required:
+        if ubt_gross_receipts > 95000:
+            warn.append(
+                f"NYC UBT Filing: Annual gross business receipts ({money(ubt_gross_receipts)}) exceed the $95,000 filing threshold. "
+                f"You are generally required to file Form {r.ubt_form} with the NYC Department of Finance, "
+                f"even though your net UBT tax owed is {money(ubt_due)}."
+            )
+        else:
+            warn.append(
+                f"NYC UBT Filing: Calculated gross UBT exceeds $3,400. You are required to file Form {r.ubt_form} "
+                f"with the NYC Department of Finance."
+            )
+        if i.solo_actual > 0:
+            r.notes.append(
+                "NYC UBT Form: Because traditional Solo 401(k) deductions are claimed, NYC Form NYC-202 instructions "
+                "generally require filing the full Form NYC-202 rather than the simplified Form NYC-202S."
+            )
+    elif profit > 0 and i.ubt_auto_estimate:
+        r.notes.append(
+            f"NYC UBT: Gross receipts ({money(ubt_gross_receipts)}) are at or below $95,000 and gross tax is <= $3,400. "
+            "No UBT return or payment is required."
+        )
+
     if school_fixed or school_rate:
         warn.append('NYC school credits estimated from latest published full-year resident rules; verify 2026 IT-201 instructions when released.')
     V.update(qbi=qbi,qbi_deduction=qbi_ded, fed_taxable=taxable,
@@ -493,8 +535,15 @@ def evaluate(i: Inputs) -> Result:
              federal_total_before_ptc=fed_total,federal_balance=fed_net,
              ny_taxable=ny_taxable,nys_tax=ny_tax,nyc_gross=nyc_gross,
              nyc_tax=nyc_net_with_school,nyc_school_fixed=school_fixed,nyc_school_rate=school_rate,
-             ubt_business_net=ubt_net_business,ubt_precredit=ubt_precredit,
-             ubt_business_credit=ubt_business_credit,ubt_resident_credit=ubt_resident_credit,
+             ubt_gross_receipts=ubt_gross_receipts,
+             ubt_business_net=ubt_net_business,
+             ubt_personal_services_deduction=ubt_personal_services,
+             ubt_exemption=5000.0,
+             ubt_taxable=ubt_taxable,
+             ubt_precredit=ubt_precredit,
+             ubt_business_credit=ubt_business_credit,
+             ubt_resident_credit=ubt_resident_credit,
+             ubt_filing_required=1.0 if ubt_filing_required else 0.0,
              mct_threshold=mct_threshold,mct_zone1=zone1,mct_zone2=zone2,
              mct1_tax=mct1,mct2_tax=mct2,mct_tax=mct,
              nyc_ubt=ubt_due,
@@ -1205,16 +1254,28 @@ class Planner(tk.Tk):
         line('NYC school rate-reduction refundable credit','nyc_school_rate')
         line('NYC resident UBT income-tax credit','ubt_resident_credit')
         line('NYC resident tax after those credits (may be negative)','nyc_tax')
-        line('NYC business income used in simplified UBT','ubt_business_net')
-        line('NYC UBT gross before business credit','ubt_precredit')
-        line('NYC UBT business credit','ubt_business_credit')
-        metric(f'MCTMT per-zone threshold ({i.tax_year} rule)', V['mct_threshold'])
-        metric('MCTMT Zone 1 attributable net SE (NYC/Brooklyn)', V['mct_zone1'])
-        line('MCTMT Zone 1 tax (0.60% cliff tax on full earnings if > threshold)', 'mct1_tax')
-        metric('MCTMT Zone 2 attributable net SE (Suburban counties)', V['mct_zone2'])
-        line('MCTMT Zone 2 tax (0.34% cliff tax on full earnings if > threshold)', 'mct2_tax')
-        line('Total MCTMT liability (both zones combined)', 'mct_tax')
-        line('NYC UBT after credits (user-supplied separately)','nyc_ubt')
+        title('NYC Unincorporated Business Tax (UBT — NYC Department of Finance)')
+        line('Schedule C gross business receipts (UBT filing threshold test)', 'ubt_gross_receipts')
+        line('Schedule C net business income (+/- NYC adjustments)', 'ubt_business_net')
+        line('Personal services deduction (up to $10k proprietor cap)', 'ubt_personal_services_deduction')
+        metric('Business specific exemption (annual full year)', 5000.0)
+        line('Taxable NYC UBT base', 'ubt_taxable')
+        line('Gross NYC UBT (4.00% rate)', 'ubt_precredit')
+        line('NYC small-business tax credit (eliminates tax <= $3,400)', 'ubt_business_credit')
+        line('Net NYC UBT owed (before personal income tax credit)', 'nyc_ubt')
+        line('NYC resident personal income tax credit (Form IT-219)', 'ubt_resident_credit')
+        if V.get('ubt_filing_required', 0) > 0:
+            rows.append('')
+            rows.append(f'  >>> NYC UBT FILING STATUS: RETURN REQUIRED ({r.ubt_form})')
+            if V['ubt_gross_receipts'] > 95000:
+                rows.append(f'      Gross receipts ({money(V["ubt_gross_receipts"])}) exceed the $95,000 threshold.')
+                rows.append('      You MUST file a UBT return with NYC Dept of Finance even if tax owed is $0.00.')
+            if i.solo_actual > 0:
+                rows.append('      Note: Solo 401(k) deductions require the full Form NYC-202 (not simplified NYC-202S).')
+        else:
+            rows.append('')
+            rows.append('  >>> NYC UBT FILING STATUS: NO RETURN REQUIRED')
+            rows.append('      Gross receipts <= $95,000 and gross tax <= $3,400.')
         metric('NY combined withholding (NYS + NYC)',i.nys_withholding+i.nyc_withholding)
         metric('NY combined estimates already paid',i.ny_estimates_already_paid)
         title(f'Suggested payments across {i.installments_remaining} REMAINING installments (NOT safe-harbor)')
@@ -1336,11 +1397,20 @@ IMPORTANT UNSUPPORTED OR SPECIAL CASES
    it is NOT a form-complete implementation of ALL Pub 974 Worksheets W/X/Y/Z.
    Certain discontinuity/corner cases require filing software/manual review.
  • 2026 PTC excess APTC repayment is FULL, without prior-year repayment caps.
- • NYC UBT is a simplified estimate from adjusted net Schedule C business income,
-   $5k business exemption, a 4% tax, and the UBT business-credit phaseout. It ALSO
-   computes NYC resident UBT income-tax credit using 2026 city income tax credit
-   brackets. This is NOT a full NYC-202 or IT-219 calculation; use manual UBT input
-   if business allocation, NYC additions/deductions, or other credits apply.
+ • NYC UBT (Unincorporated Business Tax - NYC Admin Code Title 11 Chapter 5):
+   - Administered separately by the NYC Department of Finance (Form NYC-202/NYC-202S).
+   - Rate: 4.00% on unincorporated business taxable income.
+   - Filing threshold: >$95,000 in annual gross business income (based on gross receipts,
+     NOT net profit). A return is generally required even if tax liability is $0!
+   - Personal services deduction: 20% of net income, capped at $10,000 per proprietor.
+   - Specific business exemption: $5,000 full-year exemption.
+   - Small business credit: completely eliminates UBT when calculated gross tax is
+     $3,400 or less (e.g. $100k profit -> $85k taxable base -> $3,400 tax -> $0 owed).
+     Phases out between $3,400 and $5,400, and drops to $0 at $5,400+.
+   - Form selection: Solo 401(k) contributions or multiple unincorporated businesses
+     generally require filing the full Form NYC-202 rather than simplified NYC-202S.
+   - NYC resident personal credit: Form IT-219 provides a partial credit on NYC
+     personal income tax for UBT paid (phased from 100% down to 15% by NY taxable income).
  • NYC school credit uses the latest published full-year 2025 IT-201 rules.
  • Earnings may be seasonal; annualized-income estimated tax (Form 2210, IT-2105.9)
    and prior-year safe-harbor rules require extra prior-year and timing inputs.
@@ -1418,6 +1488,49 @@ def run_tests():
             v2 = evaluate(Inputs(gross_business=100000, w2_box1=80000, solo_actual=20000)).values
             self.assertEqual(v1['mct_zone1'], v2['mct_zone1'])
             self.assertEqual(v1['mct_tax'], v2['mct_tax'])
+        def test_nyc_ubt_credit_and_filing_threshold(self):
+            # Test example from NYC UBT guidance: $100,000 net profit, $100,000 gross receipts
+            # Profit: $100,000
+            # Personal services deduction: -$10,000 (20% of $100k, capped at $10k)
+            # Business exemption: -$5,000
+            # Taxable UBT income: $85,000
+            # Gross UBT (4%): $3,400
+            # Small business tax credit: -$3,400
+            # Net UBT owed: $0.00
+            # Filing required: True (gross receipts $100,000 > $95,000 threshold!)
+            r = evaluate(Inputs(gross_business=100000))
+            v = r.values
+            self.assertAlmostEqual(v['ubt_personal_services_deduction'], 10000.0)
+            self.assertAlmostEqual(v['ubt_taxable'], 85000.0)
+            self.assertAlmostEqual(v['ubt_precredit'], 3400.0)
+            self.assertAlmostEqual(v['ubt_business_credit'], 3400.0)
+            self.assertAlmostEqual(v['nyc_ubt'], 0.0)
+            self.assertEqual(v['ubt_filing_required'], 1.0)
+            self.assertEqual(r.ubt_form, "NYC-202S (Simplified)")
+
+            # Test Solo 401(k) triggers full Form NYC-202
+            r_solo = evaluate(Inputs(gross_business=100000, solo_actual=15000))
+            self.assertEqual(r_solo.ubt_form, "NYC-202 (Full)")
+
+            # Test below $95k filing threshold: $80,000 gross receipts, $80,000 profit
+            # 20% of 80k is 16k, capped at $10k personal services deduction
+            # Taxable: 80k - 10k - 5k = 65k
+            # Gross UBT: 65k * 0.04 = $2,600 <= $3,400 -> UBT owed = $0
+            # Filing required: False ($80k <= $95k and gross tax <= $3,400)
+            r2 = evaluate(Inputs(gross_business=80000))
+            self.assertAlmostEqual(r2.values['nyc_ubt'], 0.0)
+            self.assertEqual(r2.values['ubt_filing_required'], 0.0)
+
+            # Test phaseout above $3,400: $140,000 profit
+            # Personal services: $10,000; Exemption: $5,000; Taxable: $125,000
+            # Gross UBT: 125,000 * 0.04 = $5,000
+            # Credit: 5000 * (5400 - 5000) / 2000 = $1,000
+            # Net UBT: $5,000 - $1,000 = $4,000
+            r3 = evaluate(Inputs(gross_business=140000))
+            self.assertAlmostEqual(r3.values['ubt_precredit'], 5000.0)
+            self.assertAlmostEqual(r3.values['ubt_business_credit'], 1000.0)
+            self.assertAlmostEqual(r3.values['nyc_ubt'], 4000.0)
+            self.assertEqual(r3.values['ubt_filing_required'], 1.0)
         def test_hsa_dec_start(self):
             a=Inputs(hsa_first_month=12)
             self.assertAlmostEqual(evaluate(a).values['hsa_max'],4400/12)
