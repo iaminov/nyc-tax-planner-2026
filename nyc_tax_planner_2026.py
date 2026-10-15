@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import sys
 import tkinter as tk
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
@@ -871,12 +873,33 @@ def load_inputs_from_excel(path: str) -> tuple[Inputs, list[str]]:
     return Inputs(**final_kwargs), warnings
 
 
-def save_inputs_to_excel(inputs: Inputs, path: str) -> None:
-    """Save an Inputs dataclass into an Excel file, updating existing cells in-place if present."""
+def create_excel_backup(path: str) -> str | None:
+    """Create a timestamped safety backup copy of the target Excel file before saving."""
+    if not os.path.exists(path):
+        return None
+    abs_path = os.path.abspath(path)
+    dirname, filename = os.path.split(abs_path)
+    name_root, ext = os.path.splitext(filename)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"{name_root}.backup_{timestamp}{ext}"
+    backup_path = os.path.join(dirname, backup_filename)
+    counter = 1
+    while os.path.exists(backup_path):
+        backup_filename = f"{name_root}.backup_{timestamp}_{counter}{ext}"
+        backup_path = os.path.join(dirname, backup_filename)
+        counter += 1
+    shutil.copy2(abs_path, backup_path)
+    return backup_path
+
+
+def save_inputs_to_excel(inputs: Inputs, path: str, make_backup: bool = True) -> str | None:
+    """Save an Inputs dataclass into an Excel file, creating a backup first if the file exists."""
     if not OPENPYXL_AVAILABLE:
         raise RuntimeError("openpyxl is required to save Excel files. Install with 'pip install openpyxl'.")
-    inp_dict = asdict(inputs)
+    backup_path = None
     if os.path.exists(path):
+        if make_backup:
+            backup_path = create_excel_backup(path)
         wb = openpyxl.load_workbook(path)
         ws = wb.active
         var_col = 3
@@ -893,6 +916,7 @@ def save_inputs_to_excel(inputs: Inputs, path: str) -> None:
                 start_row = r + 1
                 break
 
+        inp_dict = asdict(inputs)
         for r in range(start_row, ws.max_row + 1):
             raw_var = ws.cell(row=r, column=var_col).value
             if raw_var is not None and str(raw_var).strip() in inp_dict:
@@ -900,6 +924,7 @@ def save_inputs_to_excel(inputs: Inputs, path: str) -> None:
         wb.save(path)
     else:
         create_excel_template(path, inputs)
+    return backup_path
 
 
 class Planner(tk.Tk):
@@ -956,13 +981,15 @@ class Planner(tk.Tk):
         bar.pack(fill='x')
         ttk.Label(bar, text='2026 NYC Tax & Benefits Planner', style='Heading.TLabel').pack(side='left')
 
-        # Action buttons
-        ttk.Button(bar, text='Calculate', command=self.calculate, style='Accent.TButton').pack(side='right', padx=4)
-        ttk.Button(bar, text='Reload Excel', command=self.reload_excel).pack(side='right', padx=4)
-        ttk.Button(bar, text='Load Excel…', command=self.load_excel).pack(side='right', padx=4)
-        ttk.Button(bar, text='Save to Excel…', command=self.save_excel).pack(side='right', padx=4)
-        ttk.Button(bar, text='Save JSON…', command=self.save).pack(side='right', padx=4)
-        ttk.Button(bar, text='Load JSON…', command=self.load).pack(side='right', padx=4)
+        # Action buttons (ordered for clear, intuitive workflow)
+        ttk.Button(bar, text='Calculate', command=self.calculate, style='Accent.TButton').pack(side='right', padx=3)
+        ttk.Button(bar, text='Save to Excel (Overwrite)', command=self.save_excel_overwrite, style='Save.TButton').pack(side='right', padx=3)
+        ttk.Button(bar, text='Reload from Excel', command=self.reload_excel).pack(side='right', padx=3)
+        ttk.Button(bar, text='Reset GUI (0s)', command=self.reset_gui_zeros).pack(side='right', padx=3)
+        ttk.Button(bar, text='Load Excel…', command=self.load_excel).pack(side='right', padx=3)
+        ttk.Button(bar, text='Save As…', command=self.save_excel_as).pack(side='right', padx=3)
+        ttk.Button(bar, text='Load JSON…', command=self.load).pack(side='right', padx=2)
+        ttk.Button(bar, text='Save JSON…', command=self.save).pack(side='right', padx=2)
 
         # Status & override notification banner
         status_frame = ttk.Frame(self, padding=(14, 2, 12, 4))
@@ -970,7 +997,8 @@ class Planner(tk.Tk):
         self.status_var = tk.StringVar(
             value=f"Excel Source: {os.path.basename(self.excel_path)}  •  Feel free to manually override any field below to model what-if scenarios for this session."
         )
-        ttk.Label(status_frame, textvariable=self.status_var, style='Status.TLabel').pack(side='left')
+        self.status_lbl = ttk.Label(status_frame, textvariable=self.status_var, style='Status.TLabel')
+        self.status_lbl.pack(side='left')
 
         ttk.Label(self, text='SINGLE filer · Full-year NYC resident · 1 Schedule C business · planning estimate, not a tax return',
                   foreground='#8e3d15', padding=(14, 0, 12, 6)).pack(fill='x')
@@ -999,13 +1027,15 @@ class Planner(tk.Tk):
             style.theme_use('clam')
         except tk.TclError:
             pass
-        style.configure('Heading.TLabel', font=('Segoe UI', 17, 'bold'), foreground='#163e57')
+        style.configure('Heading.TLabel', font=('Segoe UI', 15, 'bold'), foreground='#163e57')
         style.configure('Section.TLabel', font=('Segoe UI', 11, 'bold'), foreground='#163e57')
         style.configure('Status.TLabel', font=('Segoe UI', 9, 'bold'), foreground='#0d5c75')
-        style.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'))
+        style.configure('StatusWarning.TLabel', font=('Segoe UI', 9, 'bold'), foreground='#b33800')
+        style.configure('Accent.TButton', font=('Segoe UI', 9, 'bold'))
+        style.configure('Save.TButton', font=('Segoe UI', 9, 'bold'), foreground='#1b5e20')
         style.configure('TLabel', font=('Segoe UI', 10))
         style.configure('TEntry', padding=4, font=('Segoe UI', 10))
-        style.configure('TButton', padding=6)
+        style.configure('TButton', padding=5)
         style.configure('TCheckbutton', font=('Segoe UI', 10))
 
     def _create_inputs(self):
@@ -1059,16 +1089,45 @@ class Planner(tk.Tk):
         t.config(state='disabled')
 
     def _read(self) -> Inputs:
-        data={}
-        for key,initial in asdict(self.default).items():
-            value=self.vars[key].get()
-            if isinstance(initial,bool):data[key]=bool(value)
-            elif isinstance(initial,int):data[key]=int(float(value))
-            else:data[key]=float(str(value).replace(',','').replace('$',''))
+        data: dict[str, Any] = {}
+        for key, initial in asdict(Inputs()).items():
+            if key not in self.vars:
+                continue
+            raw = self.vars[key].get()
+            if isinstance(initial, bool):
+                data[key] = bool(raw)
+            elif isinstance(initial, int):
+                s = str(raw).replace(',', '').replace('$', '').strip()
+                if not s:
+                    val = 0
+                else:
+                    try:
+                        val = int(float(s))
+                    except ValueError:
+                        val = 0
+                if key == 'installments_remaining' and val not in (1, 2, 3, 4):
+                    val = 1
+                elif key in ('hsa_first_month', 'aca_first_month') and not (1 <= val <= 12):
+                    val = 1
+                elif key in ('hsa_last_month', 'aca_last_month') and not (1 <= val <= 12):
+                    val = 12
+                elif key == 'age' and not (18 <= val <= 110):
+                    val = 37
+                data[key] = val
+            else:
+                s = str(raw).replace(',', '').replace('$', '').replace('%', '').strip()
+                if not s:
+                    val = 0.0
+                else:
+                    try:
+                        val = float(s)
+                    except ValueError:
+                        val = 0.0
+                data[key] = val
         return Inputs(**data)
 
     def reload_excel(self):
-        """Reload inputs from the active Excel workbook, clearing manual session overrides."""
+        """Reload inputs from the active Excel workbook, discarding temporary GUI changes."""
         if not OPENPYXL_AVAILABLE:
             messagebox.showerror('Excel Support', 'openpyxl is not installed. Run: pip install openpyxl')
             return
@@ -1082,15 +1141,58 @@ class Planner(tk.Tk):
                 if name in self.vars:
                     self.vars[name].set(val)
             self.status_var.set(
-                f"Reloaded from: {os.path.basename(self.excel_path)}  •  All GUI overrides reset to Excel values."
+                f"✅ Reloaded from: {os.path.basename(self.excel_path)}  •  All temporary GUI overrides discarded."
             )
+            self.status_lbl.configure(style='Status.TLabel')
             self.calculate()
             if warns:
                 messagebox.showwarning('Excel Warnings', '\n'.join(warns))
             else:
-                messagebox.showinfo('Reloaded', f'Successfully reloaded inputs from:\n{self.excel_path}')
+                messagebox.showinfo('Reloaded', f'Successfully reloaded inputs from:\n{self.excel_path}\n\nAll temporary GUI changes discarded.')
         except Exception as e:
             messagebox.showerror('Excel Load Error', str(e))
+
+    def reset_gui_zeros(self):
+        """Reset all GUI fields to 0 / empty for hypothetical scenario testing. Excel file is NOT modified."""
+        confirm = messagebox.askyesno(
+            'Reset GUI to Zeros / Empty',
+            f'Reset all input values in the GUI to 0 / empty for hypothetical what-if testing?\n\n'
+            f'Note: Your active Excel file ({os.path.basename(self.excel_path)}) will NOT be touched on disk.\n'
+            f'You can click "Reload from Excel" at any time to restore your saved values.'
+        )
+        if not confirm:
+            return
+
+        for key, initial in asdict(Inputs()).items():
+            if key not in self.vars:
+                continue
+            if isinstance(initial, bool):
+                self.vars[key].set(False)
+            elif key == 'age':
+                self.vars[key].set('37')
+            elif key == 'installments_remaining':
+                self.vars[key].set('1')
+            elif key in ('hsa_first_month', 'aca_first_month'):
+                self.vars[key].set('1')
+            elif key in ('hsa_last_month', 'aca_last_month'):
+                self.vars[key].set('12')
+            elif isinstance(initial, int):
+                self.vars[key].set('0')
+            else:
+                self.vars[key].set('0.00')
+
+        self.status_var.set(
+            f"⚠️ ZEROED BASELINE: GUI inputs set to 0/empty (hypothetical)  •  Excel '{os.path.basename(self.excel_path)}' remains untouched on disk."
+        )
+        self.status_lbl.configure(style='StatusWarning.TLabel')
+        self.calculate()
+        messagebox.showinfo(
+            'GUI Reset to Zeros',
+            'All input fields on the GUI have been reset to 0/empty for hypothetical scenario modeling.\n\n'
+            f'Your active Excel file ({os.path.basename(self.excel_path)}) was NOT modified.\n\n'
+            '• To discard these hypothetical values and reload from Excel: click "Reload from Excel".\n'
+            '• To overwrite the Excel file with these hypothetical values: click "Save to Excel (Overwrite)".'
+        )
 
     def load_excel(self):
         """Browse and load a different Excel workbook."""
@@ -1111,16 +1213,55 @@ class Planner(tk.Tk):
                 if name in self.vars:
                     self.vars[name].set(val)
             self.status_var.set(
-                f"Excel Source: {os.path.basename(self.excel_path)}  •  Override any field below in GUI for this session."
+                f"✅ Excel Source: {os.path.basename(self.excel_path)}  •  Override any field below in GUI for this session."
             )
+            self.status_lbl.configure(style='Status.TLabel')
             self.calculate()
             if warns:
                 messagebox.showwarning('Excel Warnings', '\n'.join(warns))
         except Exception as e:
             messagebox.showerror('Excel Load Error', str(e))
 
-    def save_excel(self):
-        """Save current GUI inputs (including any session overrides) into an Excel workbook."""
+    def save_excel_overwrite(self):
+        """Overwrite the active Excel workbook with current GUI values, creating a safety backup first."""
+        if not OPENPYXL_AVAILABLE:
+            messagebox.showerror('Excel Support', 'openpyxl is not installed. Run: pip install openpyxl')
+            return
+        try:
+            current_inputs = self._read()
+        except (ValueError, TypeError) as e:
+            messagebox.showerror('Invalid Values', str(e))
+            return
+
+        target_file = os.path.basename(self.excel_path)
+        confirm = messagebox.askyesno(
+            'Confirm Overwrite & Backup',
+            f'Overwrite active Excel file with current GUI values?\n\n'
+            f'Target file: {target_file}\n'
+            f'Location: {self.excel_path}\n\n'
+            f'A timestamped safety backup will be created automatically before saving.'
+        )
+        if not confirm:
+            return
+
+        try:
+            backup_file = save_inputs_to_excel(current_inputs, self.excel_path, make_backup=True)
+            self.excel_inputs = current_inputs
+            b_info = f"Backup: {os.path.basename(backup_file)}" if backup_file else "No prior file to back up."
+            self.status_var.set(
+                f"💾 Saved to: {target_file}  •  {b_info}  •  Excel and GUI in sync."
+            )
+            self.status_lbl.configure(style='Status.TLabel')
+            self.calculate()
+            msg = f"Successfully overwritten:\n{self.excel_path}"
+            if backup_file:
+                msg += f"\n\nA safety backup was created at:\n{backup_file}"
+            messagebox.showinfo('Excel Saved & Backed Up', msg)
+        except Exception as e:
+            messagebox.showerror('Excel Save Error', f"Could not save to Excel:\n{e}")
+
+    def save_excel_as(self):
+        """Save current GUI inputs into a new Excel workbook via file picker."""
         if not OPENPYXL_AVAILABLE:
             messagebox.showerror('Excel Support', 'openpyxl is not installed. Run: pip install openpyxl')
             return
@@ -1130,7 +1271,7 @@ class Planner(tk.Tk):
             messagebox.showerror('Invalid Values', str(e))
             return
         path = filedialog.asksaveasfilename(
-            title='Save Inputs to Excel',
+            title='Save Inputs to New Excel Workbook',
             defaultextension='.xlsx',
             filetypes=[('Excel Workbooks', '*.xlsx')],
             initialfile=os.path.basename(self.excel_path)
@@ -1138,13 +1279,19 @@ class Planner(tk.Tk):
         if not path:
             return
         try:
-            save_inputs_to_excel(current_inputs, path)
+            backup_file = save_inputs_to_excel(current_inputs, path, make_backup=True)
             self.excel_path = os.path.abspath(path)
             self.excel_inputs = current_inputs
+            b_info = f"Backup: {os.path.basename(backup_file)}" if backup_file else "New file created."
             self.status_var.set(
-                f"Saved to: {os.path.basename(self.excel_path)}  •  Current inputs now match Excel file."
+                f"💾 Saved to: {os.path.basename(self.excel_path)}  •  {b_info}  •  Active workbook switched."
             )
-            messagebox.showinfo('Saved', f'Inputs successfully saved to:\n{path}')
+            self.status_lbl.configure(style='Status.TLabel')
+            self.calculate()
+            msg = f"Inputs successfully saved to:\n{path}"
+            if backup_file:
+                msg += f"\n\nA safety backup was created at:\n{backup_file}"
+            messagebox.showinfo('Saved', msg)
         except Exception as e:
             messagebox.showerror('Excel Save Error', str(e))
 
@@ -1172,12 +1319,14 @@ class Planner(tk.Tk):
 
         if overrides:
             self.status_var.set(
-                f"Excel Source: {os.path.basename(self.excel_path)}  •  {len(overrides)} session GUI override(s) active!"
+                f"⚠️ HYPOTHETICAL MODE: {len(overrides)} field(s) modified in GUI  •  Excel '{os.path.basename(self.excel_path)}' is unchanged on disk  •  Click 'Save to Excel (Overwrite)' or 'Reload from Excel'."
             )
+            self.status_lbl.configure(style='StatusWarning.TLabel')
         else:
             self.status_var.set(
-                f"Excel Source: {os.path.basename(self.excel_path)}  •  All inputs match Excel file (override any field below)."
+                f"✅ Excel Source: {os.path.basename(self.excel_path)}  •  All GUI fields match Excel file  •  Edit fields in GUI for hypothetical modeling."
             )
+            self.status_lbl.configure(style='Status.TLabel')
 
         rows=[]
         def title(s):rows.extend(['','='*82,s.upper(),'='*82])
@@ -1190,7 +1339,8 @@ class Planner(tk.Tk):
         rows.append('')
         rows.append(f'INPUT SOURCE FILE: {self.excel_path}')
         if overrides:
-            rows.append(f'SESSION GUI OVERRIDES ACTIVE ({len(overrides)} field(s) modified in GUI for this calculation):')
+            rows.append(f'⚠️ HYPOTHETICAL SESSION OVERRIDES ACTIVE ({len(overrides)} field(s) modified in GUI for this calculation):')
+            rows.append('   (The active Excel file is NOT modified yet. Click "Save to Excel (Overwrite)" to persist these values.)')
             for var_name, old_v, new_v in overrides:
                 if isinstance(old_v, bool):
                     old_str = "TRUE" if old_v else "FALSE"
@@ -1198,10 +1348,13 @@ class Planner(tk.Tk):
                 elif isinstance(old_v, int):
                     old_str = str(old_v)
                     new_str = str(new_v)
+                elif 'percent' in var_name:
+                    old_str = f"{old_v:.2f}%"
+                    new_str = f"{new_v:.2f}%"
                 else:
                     old_str = money(old_v)
                     new_str = money(new_v)
-                rows.append(f'  • {var_name:<30} Excel: {old_str:>14}  -->  Session GUI: {new_str:>14}')
+                rows.append(f'   • {var_name:<30} Excel: {old_str:>14}  -->  Hypothetical GUI: {new_str:>14}')
         else:
             rows.append('STATUS: All modeled inputs match the active Excel file (no session overrides).')
 
@@ -1619,6 +1772,40 @@ def run_tests():
                 self.assertAlmostEqual(loaded.gross_business, 180000.50)
                 self.assertTrue(loaded.hsa_family)
                 self.assertEqual(loaded.age, 42)
+        def test_excel_backup_and_reset_zeros(self):
+            if not OPENPYXL_AVAILABLE:
+                return
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                p = os.path.join(tmpdir, "my_taxes.xlsx")
+                create_excel_template(p, Inputs(gross_business=100000, solo_actual=15000))
+                
+                # First overwrite save creates a backup of the original file
+                inp_modified = Inputs(gross_business=160000, solo_actual=25000)
+                backup_path = save_inputs_to_excel(inp_modified, p, make_backup=True)
+                self.assertIsNotNone(backup_path)
+                self.assertTrue(os.path.exists(backup_path))
+                self.assertTrue(".backup_" in backup_path)
+                
+                # Check backup has original values (100,000)
+                bk_loaded, _ = load_inputs_from_excel(backup_path)
+                self.assertAlmostEqual(bk_loaded.gross_business, 100000)
+                self.assertAlmostEqual(bk_loaded.solo_actual, 15000)
+                
+                # Check current target file has new values (160,000)
+                cur_loaded, _ = load_inputs_from_excel(p)
+                self.assertAlmostEqual(cur_loaded.gross_business, 160000)
+                self.assertAlmostEqual(cur_loaded.solo_actual, 25000)
+
+                # Test evaluation with zeroed baseline (Reset GUI to 0s)
+                zero_inputs = Inputs(
+                    gross_business=0.0, business_expenses=0.0, w2_box1=0.0,
+                    short_gains=0.0, long_gains=0.0, solo_actual=0.0, hsa_actual=0.0,
+                    benchmark_monthly=0.0, enrollment_monthly=0.0
+                )
+                r_zero = evaluate(zero_inputs)
+                self.assertAlmostEqual(r_zero.values['federal_balance'], 0.0)
+                self.assertAlmostEqual(r_zero.values['total_quarterly'], 0.0)
     suite=__import__('unittest').defaultTestLoader.loadTestsFromTestCase(CoreTests)
     run=__import__('unittest').TextTestRunner(verbosity=2).run(suite)
     sys.exit(0 if run.wasSuccessful() else 1)

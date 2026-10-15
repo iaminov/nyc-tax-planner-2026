@@ -143,19 +143,20 @@ Or target a specific custom file:
 python nyc_tax_planner_2026.py --excel path/to/my_inputs.xlsx
 ```
 
-### 2. Live Session Overrides (Modeling Scenarios)
-- When the GUI loads, all fields are populated from your Excel workbook.
-- **You can freely edit any value directly in the GUI** to test scenarios (e.g., "What if my profit increases by $25k?" or "What if I maximize my Solo 401(k)?").
-- Click **Calculate** to recompute all taxes and credits immediately.
-- The **Results tab** displays an active session diff comparing your modified GUI values against your original Excel values.
-- **Controls**:
-  - **`Calculate`**: Evaluates using current GUI inputs.
-  - **`Reload Excel`**: Reverts all GUI fields back to the saved Excel file.
+### 2. Live Session Overrides & Scenario Modeling
+- **Initial Load**: When the GUI opens, all fields are automatically populated from your active Excel workbook.
+- **Hypothetical What-If Scenarios**: You can freely edit any value directly in the GUI to test hypothetical scenarios (e.g., "What if my revenue increases by $30k?", "What if I maximize my Solo 401(k)?", or "What if capital gains are zero?").
+- **Visual Session Diff**: Click **`Calculate`** to evaluate your hypothetical numbers. The GUI highlights active overrides in the status bar and displays an itemized diff in the **Results tab** comparing your hypothetical GUI entries against the saved Excel file.
+- **Toolbar Actions**:
+  - **`Calculate`**: Evaluates all taxes, Solo 401(k) limits, HSA limits, and quarterly vouchers using current GUI inputs without altering any files on disk.
+  - **`Save to Excel (Overwrite)`**: Overwrites the active Excel workbook with your current GUI values. **Before modifying the file, it automatically creates a timestamped safety backup copy** (e.g., `tax_inputs_2026.backup_20261015_161530.xlsx`) so you never lose prior data.
+  - **`Reload from Excel`**: Discards all temporary/hypothetical GUI modifications and re-reads the active Excel file from disk, resetting the planner to your saved state.
+  - **`Reset GUI (0s)`**: Resets input fields in the GUI to `0` / empty (and checkboxes to `False`) to model a blank-slate hypothetical baseline. **This does NOT touch your Excel file.** You can restore your saved numbers at any time by clicking `Reload from Excel`.
+  - **`Save As…`**: Saves the current GUI inputs into a new Excel workbook via a file dialog (also creating a backup if the destination file already exists).
   - **`Load Excel…`**: Select and switch to any other Excel file.
-  - **`Save to Excel…`**: Persists your GUI session modifications back into an Excel file.
 
 ### 3. Running Automated Tests
-The repository includes a comprehensive unit test suite covering math calculations, bisection convergence, MCTMT cliff rules, and Excel round-trip parsing:
+The repository includes a comprehensive unit test suite covering tax calculations, bisection convergence, MCTMT cliff rules, UBT credits, automated backups, and Excel round-trip parsing:
 ```bash
 python nyc_tax_planner_2026.py --test
 ```

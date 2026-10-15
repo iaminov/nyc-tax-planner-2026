@@ -26,3 +26,9 @@ tax_inputs_2026.xlsx
 my_*.xlsx
 *personal*.xlsx
 *.csv
+
+# Excel safety backups
+*.bak
+*.bak*
+*.backup*
+*backup*.xlsx
