@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Agent IDE configurations
+.gemini/
+.agents/
+
+# Personal tax data & active user workbooks (DO NOT COMMIT PERSONAL DATA)
+tax_inputs_2026.xlsx
+*.json
+!manifest.json
+my_*.xlsx
+*personal*.xlsx
+*.csv
