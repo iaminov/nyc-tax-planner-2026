@@ -155,8 +155,36 @@ python nyc_tax_planner_2026.py --excel path/to/my_inputs.xlsx
   - **`Save As…`**: Saves the current GUI inputs into a new Excel workbook via a file dialog (also creating a backup if the destination file already exists).
   - **`Load Excel…`**: Select and switch to any other Excel file.
 
-### 3. Running Automated Tests
-The repository includes a comprehensive unit test suite covering tax calculations, bisection convergence, MCTMT cliff rules, UBT credits, automated backups, and Excel round-trip parsing:
+### 3. Importing Brokerage Data (Fidelity, Robinhood, SoFi)
+
+You can automatically populate your capital gains, dividends, and interest using either **Brokerage CSV files** or the **SnapTrade API**:
+
+Click **`Import Brokerage…`** on the top toolbar to open the importer window.
+
+#### Option A: CSV File Import (100% Local & Free)
+1. **Download your Year-to-Date (YTD) or Closed Positions CSV**:
+   - **Fidelity**: *Accounts & Tax* → *Tax Forms & Information* → *Tax Info (YTD)* → Export CSV, or *Positions* → *Closed Positions* → Download CSV.
+   - **Robinhood**: *Investing* → *Tax Documents* or *Reports* → Download CSV.
+   - **SoFi**: *Invest* → *Account Settings* → *Monthly Statements & Tax Documents* → Realized Gain/Loss CSV.
+   - **Generic / 1099**: Any standard 1099-B, 1099-DIV, or 1099-INT statement CSV.
+2. Select the CSV in the **Import Brokerage** dialog. The planner automatically parses:
+   - Net Short-Term Capital Gains (`short_gains`)
+   - Net Long-Term Capital Gains (`long_gains`)
+   - Qualified Dividends (`qualified_dividends`)
+   - Taxable Interest & Other Ordinary Income (`interest_other_ordinary`)
+3. Choose **Add** (to accumulate across multiple brokerages, e.g. Fidelity + Robinhood + SoFi) or **Replace**, then click **Apply CSV Data to Tax Planner**.
+
+#### Option B: SnapTrade API (Live Brokerage Connection)
+SnapTrade provides tokenized, read-only OAuth connections to retail brokerages (Fidelity, Robinhood, SoFi, Schwab, Vanguard, etc.):
+1. Get free developer API keys at [https://snaptrade.com](https://snaptrade.com).
+2. In the **SnapTrade API** tab, enter your `Client ID` and `Consumer Key`.
+3. Click **1. Connect Brokerage Account (OAuth)**. A secure browser window opens to authenticate with your brokerage.
+4. Click **2. Fetch & Sync Tax Data** to automatically query your accounts and summarize activities for the tax year.
+5. Click **Apply Synced Data to Tax Planner**.
+6. *Security*: Credentials can be saved locally to `snaptrade_config.json`, which is strictly ignored by `.gitignore`.
+
+### 4. Running Automated Tests
+The repository includes a comprehensive unit test suite covering tax calculations, bisection convergence, MCTMT cliff rules, UBT credits, automated backups, Excel round-trip parsing, and brokerage CSV/SnapTrade parsing:
 ```bash
 python nyc_tax_planner_2026.py --test
 ```

@@ -15,10 +15,13 @@ import os
 import shutil
 import sys
 import tkinter as tk
+import webbrowser
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
+
+from brokerage_integration import BrokerageSummary, parse_brokerage_csv, SnapTradeClient
 
 try:
     import openpyxl
@@ -986,6 +989,7 @@ class Planner(tk.Tk):
         ttk.Button(bar, text='Save to Excel (Overwrite)', command=self.save_excel_overwrite, style='Save.TButton').pack(side='right', padx=3)
         ttk.Button(bar, text='Reload from Excel', command=self.reload_excel).pack(side='right', padx=3)
         ttk.Button(bar, text='Reset GUI (0s)', command=self.reset_gui_zeros).pack(side='right', padx=3)
+        ttk.Button(bar, text='Import Brokerage…', command=self.open_brokerage_dialog, style='Brokerage.TButton').pack(side='right', padx=3)
         ttk.Button(bar, text='Load Excel…', command=self.load_excel).pack(side='right', padx=3)
         ttk.Button(bar, text='Save As…', command=self.save_excel_as).pack(side='right', padx=3)
         ttk.Button(bar, text='Load JSON…', command=self.load).pack(side='right', padx=2)
@@ -1033,6 +1037,7 @@ class Planner(tk.Tk):
         style.configure('StatusWarning.TLabel', font=('Segoe UI', 9, 'bold'), foreground='#b33800')
         style.configure('Accent.TButton', font=('Segoe UI', 9, 'bold'))
         style.configure('Save.TButton', font=('Segoe UI', 9, 'bold'), foreground='#1b5e20')
+        style.configure('Brokerage.TButton', font=('Segoe UI', 9, 'bold'), foreground='#0d47a1')
         style.configure('TLabel', font=('Segoe UI', 10))
         style.configure('TEntry', padding=4, font=('Segoe UI', 10))
         style.configure('TButton', padding=5)
@@ -1600,6 +1605,263 @@ SOURCES (official where possible):
         except (ValueError,TypeError, OSError) as e:
             messagebox.showerror('Could not load',str(e))
 
+    def open_brokerage_dialog(self):
+        """Open the Brokerage Data Importer dialog (CSV or SnapTrade API)."""
+        BrokerageImportDialog(self)
+
+    def apply_brokerage_summary(self, summary: BrokerageSummary, mode: str = "add"):
+        """Apply imported brokerage capital gains, dividends, and interest into GUI fields."""
+        def clean_val(var_name: str) -> float:
+            raw = self.vars[var_name].get() if var_name in self.vars else 0.0
+            return float(str(raw or 0.0).replace('$', '').replace(',', '').replace('%', '').strip() or 0.0)
+
+        if mode == "add":
+            new_sg = clean_val('short_gains') + summary.short_gains
+            new_lg = clean_val('long_gains') + summary.long_gains
+            new_qd = clean_val('qualified_dividends') + summary.qualified_dividends
+            new_io = clean_val('interest_other_ordinary') + summary.interest + summary.ordinary_dividends
+        else:  # replace
+            new_sg = summary.short_gains
+            new_lg = summary.long_gains
+            new_qd = summary.qualified_dividends
+            new_io = summary.interest + summary.ordinary_dividends
+
+        self.vars['short_gains'].set(f"{new_sg:.2f}")
+        self.vars['long_gains'].set(f"{new_lg:.2f}")
+        self.vars['qualified_dividends'].set(f"{new_qd:.2f}")
+        self.vars['interest_other_ordinary'].set(f"{new_io:.2f}")
+
+        action_desc = "Added to" if mode == "add" else "Replaced"
+        self.status_var.set(
+            f"📈 {action_desc} inputs from {summary.source}: ST Gains ${new_sg:,.2f}, LT Gains ${new_lg:,.2f}, Dividends ${new_qd:,.2f}, Interest ${new_io:,.2f}."
+        )
+        self.calculate()
+        messagebox.showinfo(
+            "Brokerage Data Applied",
+            f"Successfully applied data from {summary.source} ({action_desc} mode):\n\n"
+            f"• Net Short-Term Capital Gains: ${new_sg:,.2f}\n"
+            f"• Net Long-Term Capital Gains:  ${new_lg:,.2f}\n"
+            f"• Qualified Dividends:          ${new_qd:,.2f}\n"
+            f"• Interest & Other Ordinary:    ${new_io:,.2f}\n\n"
+            f"All NYC/NYS/Federal tax estimates and quarterly vouchers have been recalculated."
+        )
+
+
+class BrokerageImportDialog(tk.Toplevel):
+    def __init__(self, master: Planner):
+        super().__init__(master)
+        self.master: Planner = master
+        self.title("Import Brokerage Data (CSV or SnapTrade API)")
+        self.geometry("780x640")
+        self.minsize(700, 580)
+        self.transient(master)
+        self.grab_set()
+
+        self.parsed_csv_summary: BrokerageSummary | None = None
+        self.synced_snaptrade_summary: BrokerageSummary | None = None
+        self.snaptrade_client: SnapTradeClient | None = SnapTradeClient.load_config()
+
+        # Top Banner
+        header = ttk.Frame(self, padding=(16, 12, 16, 8))
+        header.pack(fill='x')
+        ttk.Label(header, text="Brokerage Tax Data Importer", font=('Segoe UI', 14, 'bold'), foreground='#163e57').pack(anchor='w')
+        ttk.Label(
+            header,
+            text="Extract realized short/long capital gains, qualified dividends, and interest from Fidelity, Robinhood, or SoFi.",
+            font=('Segoe UI', 9),
+            foreground='#555555'
+        ).pack(anchor='w', pady=(2, 0))
+
+        # Notebook tabs
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill='both', expand=True, padx=14, pady=(4, 10))
+
+        self.csv_tab = ttk.Frame(self.tabs, padding=12)
+        self.api_tab = ttk.Frame(self.tabs, padding=12)
+        self.tabs.add(self.csv_tab, text="  📁 Import Brokerage CSV (Fidelity / Robinhood / SoFi / 1099)  ")
+        self.tabs.add(self.api_tab, text="  ⚡ SnapTrade API (Live Connection)  ")
+
+        self._build_csv_tab()
+        self._build_api_tab()
+
+    def _build_csv_tab(self):
+        # Instructions Frame
+        inst_lf = ttk.LabelFrame(self.csv_tab, text="Where to download your Year-to-Date (YTD) CSV", padding=10)
+        inst_lf.pack(fill='x', pady=(0, 10))
+        ttk.Label(inst_lf, text="• Fidelity: Accounts & Tax → Tax Forms & Information → Tax Info (YTD) → Export, or Positions → Closed Positions CSV\n"
+                                "• Robinhood: Investing → Tax Documents or Reports → Export Transactions/1099 CSV\n"
+                                "• SoFi: Invest → Account Settings → Monthly Statements & Tax Documents → Realized Gain/Loss CSV\n"
+                                "• Generic: Any standard 1099-B, 1099-DIV, or 1099-INT statement CSV",
+                  font=('Segoe UI', 9), justify='left').pack(anchor='w')
+
+        # File Chooser Frame
+        file_lf = ttk.Frame(self.csv_tab)
+        file_lf.pack(fill='x', pady=6)
+        ttk.Label(file_lf, text="CSV File:").pack(side='left', padx=(0, 6))
+        self.csv_path_var = tk.StringVar(value="")
+        ttk.Entry(file_lf, textvariable=self.csv_path_var, width=54).pack(side='left', fill='x', expand=True, padx=(0, 8))
+        ttk.Button(file_lf, text="Browse…", command=self._browse_csv).pack(side='left')
+
+        # Preview Frame
+        self.csv_preview_lf = ttk.LabelFrame(self.csv_tab, text="Parsed Tax Data Preview", padding=10)
+        self.csv_preview_lf.pack(fill='both', expand=True, pady=8)
+
+        self.csv_preview_text = tk.Text(self.csv_preview_lf, wrap='word', height=7, font=('Consolas', 10), bg='#f8fafc', fg='#1e293b')
+        self.csv_preview_text.pack(fill='both', expand=True)
+        self.csv_preview_text.insert('end', "Select a CSV file above to preview extracted short/long gains, dividends, and interest.")
+        self.csv_preview_text.config(state='disabled')
+
+        # Mode & Action Frame
+        action_frame = ttk.Frame(self.csv_tab)
+        action_frame.pack(fill='x', pady=(6, 0))
+
+        self.csv_mode_var = tk.StringVar(value="add")
+        ttk.Radiobutton(action_frame, text="Add to current planner inputs (combine accounts)", variable=self.csv_mode_var, value="add").pack(anchor='w')
+        ttk.Radiobutton(action_frame, text="Replace current planner inputs", variable=self.csv_mode_var, value="replace").pack(anchor='w')
+
+        apply_btn = ttk.Button(action_frame, text="Apply CSV Data to Tax Planner", command=self._apply_csv, style='Accent.TButton')
+        apply_btn.pack(side='right', pady=(4, 0))
+
+    def _browse_csv(self):
+        path = filedialog.askopenfilename(
+            title="Select Brokerage CSV File",
+            filetypes=[("CSV and Text Files", "*.csv;*.txt"), ("All Files", "*.*")]
+        )
+        if not path:
+            return
+        self.csv_path_var.set(path)
+        try:
+            summary = parse_brokerage_csv(path)
+            self.parsed_csv_summary = summary
+            self.csv_preview_text.config(state='normal')
+            self.csv_preview_text.delete('1.0', 'end')
+            self.csv_preview_text.insert('end', summary.summary_text() + "\n\nDetails:\n" + "\n".join(" • " + d for d in summary.details))
+            self.csv_preview_text.config(state='disabled')
+        except Exception as e:
+            messagebox.showerror("CSV Parse Error", f"Could not parse CSV file:\n{e}")
+
+    def _apply_csv(self):
+        if not self.parsed_csv_summary or self.parsed_csv_summary.record_count == 0:
+            messagebox.showwarning("No Data", "Please select a valid brokerage CSV file with data first.")
+            return
+        self.master.apply_brokerage_summary(self.parsed_csv_summary, mode=self.csv_mode_var.get())
+        self.destroy()
+
+    def _build_api_tab(self):
+        info_lf = ttk.LabelFrame(self.api_tab, text="About SnapTrade API", padding=10)
+        info_lf.pack(fill='x', pady=(0, 8))
+        ttk.Label(
+            info_lf,
+            text="SnapTrade (https://snaptrade.com) provides secure OAuth connections to retail brokerages\n"
+                 "(Fidelity, Robinhood, SoFi, Schwab, Vanguard, etc.) without exposing your passwords.",
+            font=('Segoe UI', 9),
+            justify='left'
+        ).pack(anchor='w')
+
+        cred_lf = ttk.LabelFrame(self.api_tab, text="SnapTrade API Credentials", padding=10)
+        cred_lf.pack(fill='x', pady=6)
+        cred_lf.columnconfigure(1, weight=1)
+
+        loaded_cid = self.snaptrade_client.client_id if self.snaptrade_client else ""
+        loaded_ckey = self.snaptrade_client.consumer_key if self.snaptrade_client else ""
+        loaded_uid = self.snaptrade_client.user_id if self.snaptrade_client and self.snaptrade_client.user_id else "nyc_tax_planner_user"
+
+        self.cid_var = tk.StringVar(value=loaded_cid)
+        self.ckey_var = tk.StringVar(value=loaded_ckey)
+        self.uid_var = tk.StringVar(value=loaded_uid)
+        self.save_cfg_var = tk.BooleanVar(value=True)
+
+        ttk.Label(cred_lf, text="Client ID:").grid(row=0, column=0, sticky='w', pady=3)
+        ttk.Entry(cred_lf, textvariable=self.cid_var, width=46).grid(row=0, column=1, sticky='ew', padx=(6, 0), pady=3)
+
+        ttk.Label(cred_lf, text="Consumer Key:").grid(row=1, column=0, sticky='w', pady=3)
+        ttk.Entry(cred_lf, textvariable=self.ckey_var, width=46, show="*").grid(row=1, column=1, sticky='ew', padx=(6, 0), pady=3)
+
+        ttk.Label(cred_lf, text="User ID:").grid(row=2, column=0, sticky='w', pady=3)
+        ttk.Entry(cred_lf, textvariable=self.uid_var, width=46).grid(row=2, column=1, sticky='ew', padx=(6, 0), pady=3)
+
+        ttk.Checkbutton(cred_lf, text="Save credentials to snaptrade_config.json (git-ignored)", variable=self.save_cfg_var).grid(row=3, column=1, sticky='w', padx=(6, 0), pady=4)
+
+        btn_row = ttk.Frame(self.api_tab)
+        btn_row.pack(fill='x', pady=6)
+        ttk.Button(btn_row, text="1. Connect Brokerage Account (OAuth)", command=self._connect_snaptrade).pack(side='left', padx=(0, 6))
+        ttk.Button(btn_row, text="2. Fetch & Sync Tax Data", command=self._sync_snaptrade).pack(side='left')
+
+        # Preview Frame
+        self.api_preview_lf = ttk.LabelFrame(self.api_tab, text="Synced Brokerage Data Preview", padding=10)
+        self.api_preview_lf.pack(fill='both', expand=True, pady=6)
+
+        self.api_preview_text = tk.Text(self.api_preview_lf, wrap='word', height=6, font=('Consolas', 10), bg='#f8fafc', fg='#1e293b')
+        self.api_preview_text.pack(fill='both', expand=True)
+        self.api_preview_text.insert('end', "Enter your SnapTrade credentials above, connect your account, and click 'Fetch & Sync Tax Data'.")
+        self.api_preview_text.config(state='disabled')
+
+        # Action row
+        api_action_frame = ttk.Frame(self.api_tab)
+        api_action_frame.pack(fill='x', pady=(6, 0))
+
+        self.api_mode_var = tk.StringVar(value="add")
+        ttk.Radiobutton(api_action_frame, text="Add to current planner inputs (combine accounts)", variable=self.api_mode_var, value="add").pack(anchor='w')
+        ttk.Radiobutton(api_action_frame, text="Replace current planner inputs", variable=self.api_mode_var, value="replace").pack(anchor='w')
+
+        ttk.Button(api_action_frame, text="Apply Synced Data to Tax Planner", command=self._apply_api, style='Accent.TButton').pack(side='right', pady=(4, 0))
+
+    def _get_client(self) -> SnapTradeClient:
+        cid = self.cid_var.get().strip()
+        ckey = self.ckey_var.get().strip()
+        uid = self.uid_var.get().strip() or "nyc_tax_planner_user"
+        if not cid or not ckey:
+            raise ValueError("SnapTrade Client ID and Consumer Key are required.")
+        client = SnapTradeClient(client_id=cid, consumer_key=ckey, user_id=uid)
+        if self.save_cfg_var.get():
+            client.save_config()
+        return client
+
+    def _connect_snaptrade(self):
+        try:
+            client = self._get_client()
+            # Register user if secret not present
+            if not client.user_secret:
+                try:
+                    client.register_user(client.user_id)
+                except Exception:
+                    pass
+            login_url = client.get_login_redirect_url()
+            webbrowser.open(login_url)
+            messagebox.showinfo(
+                "OAuth Portal Opened",
+                "A secure SnapTrade connection window has been opened in your web browser.\n\n"
+                "1. Select your brokerage (Fidelity, Robinhood, or SoFi) and log in.\n"
+                "2. Complete multi-factor authentication (MFA).\n"
+                "3. Once authorization is complete, return here and click '2. Fetch & Sync Tax Data'."
+            )
+        except Exception as e:
+            messagebox.showerror("SnapTrade Connection Error", str(e))
+
+    def _sync_snaptrade(self):
+        try:
+            client = self._get_client()
+            summary = client.fetch_tax_summary(target_year=2026)
+            self.synced_snaptrade_summary = summary
+
+            self.api_preview_text.config(state='normal')
+            self.api_preview_text.delete('1.0', 'end')
+            self.api_preview_text.insert('end', summary.summary_text() + "\n\nDetails:\n" + "\n".join(" • " + d for d in summary.details))
+            self.api_preview_text.config(state='disabled')
+            if summary.record_count > 0:
+                messagebox.showinfo("Sync Successful", f"Successfully synced {summary.record_count} items from {summary.source}!")
+            else:
+                messagebox.showinfo("Sync Complete", "Connected successfully, but 0 activities were found for 2026. (If your trades occurred in 2025 or earlier, check target tax year.)")
+        except Exception as e:
+            messagebox.showerror("SnapTrade Sync Error", str(e))
+
+    def _apply_api(self):
+        if not self.synced_snaptrade_summary:
+            messagebox.showwarning("No Data", "Please sync data from SnapTrade first.")
+            return
+        self.master.apply_brokerage_summary(self.synced_snaptrade_summary, mode=self.api_mode_var.get())
+        self.destroy()
+
 
 def run_tests():
     from unittest import TestCase, main
@@ -1806,6 +2068,56 @@ def run_tests():
                 r_zero = evaluate(zero_inputs)
                 self.assertAlmostEqual(r_zero.values['federal_balance'], 0.0)
                 self.assertAlmostEqual(r_zero.values['total_quarterly'], 0.0)
+
+        def test_brokerage_csv_parsing(self):
+            # Fidelity CSV
+            fid_csv = (
+                "Fidelity Brokerage Services LLC\n"
+                "Account,Symbol,Description,Quantity,Date Acquired,Date Sold,Proceeds,Cost Basis,Realized Gain/Loss,Term\n"
+                "Z12345678,NVDA,NVIDIA CORP,10,01/15/2026,03/10/2026,$8500.00,$6000.00,$2500.00,Short-Term\n"
+                "Z12345678,AAPL,APPLE INC,20,02/01/2024,04/01/2026,$3600.00,$2400.00,$1200.00,Long-Term\n"
+                "Z12345678,VOO,VANGUARD S&P 500,50,N/A,06/15/2026,$450.00,$0.00,$450.00,DIVIDEND\n"
+            )
+            r_fid = parse_brokerage_csv(fid_csv, "fidelity_test.csv")
+            self.assertEqual(r_fid.short_gains, 2500.0)
+            self.assertEqual(r_fid.long_gains, 1200.0)
+            self.assertEqual(r_fid.qualified_dividends, 450.0)
+
+            # Robinhood Activity CSV
+            rh_csv = (
+                "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+                "01/10/2026,01/10/2026,01/12/2026,MSFT,MICROSOFT CORP,CDIV,,,$150.00\n"
+                "02/15/2026,02/15/2026,02/17/2026,CASH,Brokerage Cash Sweep,INT,,,$45.50\n"
+            )
+            r_rh = parse_brokerage_csv(rh_csv, "rh_test.csv")
+            self.assertEqual(r_rh.qualified_dividends, 150.0)
+            self.assertEqual(r_rh.interest, 45.50)
+
+            # SoFi CSV
+            sofi_csv = (
+                "Date,Type,Symbol,Amount,Realized Gain/Loss,Term\n"
+                "03/01/2026,Sell,TSLA,$5000.00,$1800.00,Short\n"
+                "03/15/2026,Sell,AMZN,$10000.00,$3200.00,Long\n"
+                "03/20/2026,Dividend,SCHD,$80.00,$0.00,\n"
+                "03/31/2026,Interest,Cash,$15.00,$0.00,\n"
+            )
+            r_sofi = parse_brokerage_csv(sofi_csv, "sofi_test.csv")
+            self.assertEqual(r_sofi.short_gains, 1800.0)
+            self.assertEqual(r_sofi.long_gains, 3200.0)
+            self.assertEqual(r_sofi.qualified_dividends, 80.0)
+            self.assertEqual(r_sofi.interest, 15.0)
+
+            # Combine all three
+            combined = r_fid.add(r_rh).add(r_sofi)
+            self.assertEqual(combined.short_gains, 4300.0)
+            self.assertEqual(combined.long_gains, 4400.0)
+            self.assertEqual(combined.qualified_dividends, 680.0)
+            self.assertEqual(combined.interest, 60.50)
+
+        def test_snaptrade_signing(self):
+            client = SnapTradeClient(client_id="TEST_CLIENT", consumer_key="TEST_KEY_123", user_id="test_user", user_secret="secret_abc")
+            sig = client._generate_signature("/api/v1/accounts", {"clientId": "TEST_CLIENT", "timestamp": 1700000000})
+            self.assertTrue(len(sig) > 10)
     suite=__import__('unittest').defaultTestLoader.loadTestsFromTestCase(CoreTests)
     run=__import__('unittest').TextTestRunner(verbosity=2).run(suite)
     sys.exit(0 if run.wasSuccessful() else 1)

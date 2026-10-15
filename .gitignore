@@ -32,3 +32,7 @@ my_*.xlsx
 *.bak*
 *.backup*
 *backup*.xlsx
+
+# SnapTrade API credentials (NEVER COMMIT API KEYS)
+snaptrade_config.json
+*snaptrade*.json
